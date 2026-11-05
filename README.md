@@ -1,2 +1,24 @@
-# Aptec-retail
-app for our retail stores 
+# Aptelecom Retail Management System
+
+نظام إدارة فروع التجزئة لشركة Aptelecom
+
+## المميزات
+- تسجيل دخول متعدد الصلاحيات
+- لوحة تحكم مع رسوم بيانية
+- تتبع الحضور والانصراف
+- قائمة تفتيش شاملة (3 أقسام)
+- إدارة الفروع والمديرين
+- تصدير Excel و PDF
+
+## بيانات الدخول
+| المستخدم | كلمة المرور | الصلاحية |
+|----------|-------------|----------|
+| admin | admin123 | مدير الشركة |
+| area1 | area123 | مدير منطقة |
+| branch1 | branch123 | مدير فرع |
+
+## التقنيات
+HTML5 · CSS3 · JavaScript · Chart.js · SheetJS · jsPDF
+
+## الرخصة
+© Aptelecom 2024
