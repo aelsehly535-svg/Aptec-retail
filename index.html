@@ -45,10 +45,67 @@ function distanceMeters(a,b){const rad=x=>x*Math.PI/180,R=6371000,dLat=rad(b.lat
 function branchCoordinates(branch){const lat=Number(branch?.lat),lng=Number(branch?.lng);return Number.isFinite(lat)&&Number.isFinite(lng)&&Math.abs(lat)<=90&&Math.abs(lng)<=180?{lat,lng}:null}
 function showAttendanceBranch(){const b=DATA.branches[Number($('attBranch').value)],el=$('attBranchInfo');if(!b){el.textContent='اختار الفرع لعرض بياناته.';el.className='status';return}el.textContent=`${b.name} — ${b.address||b.city||''}. ${branchCoordinates(b)?'إحداثيات الفرع جاهزة.':'إحداثيات الفرع لم تُضف بعد؛ التسجيل الجغرافي سيظل موقوفًا لحين إضافتها.'}`;el.className='status '+(branchCoordinates(b)?'good':'')}
 function validateGeofence(pos,branch){const target=branchCoordinates(branch);if(!target)return {ok:false,message:'إحداثيات هذا الفرع لم تُضاف بعد. مش هنسجل حضور أو انصراف قبل تحديد موقع الفرع.'};if(!Number.isFinite(pos.accuracy)||pos.accuracy>30)return {ok:false,message:`دقة GPS الحالية ${pos.accuracy||'غير معروفة'} متر. لازم الدقة تكون 30 متر أو أفضل؛ حاول تقف في مكان مفتوح وتعيد المحاولة.`};const distance=Math.round(distanceMeters(pos,target));if(distance>100)return {ok:false,message:`أنت خارج نطاق الفرع. المسافة الحالية حوالي ${distance} متر، والمسموح 100 متر فقط.`};return {ok:true,distance}}
-function recordAttendance(){const name=$('attName').value.trim(),idx=$('attBranch').value,type=$('attType').value;if(!name){$('attMsg').textContent='اكتب اسم الموظف الأول';$('attMsg').className='status bad';return}if(idx===''){ $('attMsg').textContent='اختار الفرع الأول';$('attMsg').className='status bad';return}const branch=DATA.branches[Number(idx)];$('attSubmit').disabled=true;$('attSubmit').textContent='جارٍ التحقق من الموقع...';$('attMsg').textContent='جارٍ قراءة GPS والتحقق من نطاق الفرع...';$('attMsg').className='status';gps(pos=>{const check=validateGeofence(pos,branch);if(!check.ok){$('attMsg').textContent=check.message;$('attMsg').className='status bad';logLocationAttempt({name,role:$('attRole').value,branch:branch.name,type,coords:pos,accepted:false,reason:check.message});$('attSubmit').disabled=false;$('attSubmit').textContent='تحديد موقعي وتسجيل الحركة';return}let a=read('attendance');const open=a.find(x=>x.name===name&&x.branch===branch.name&&x.type==='حضور'&&!a.some(y=>y.name===name&&y.branch===branch.name&&y.type==='انصراف'&&new Date(y.time)>new Date(x.time)));if(type==='حضور'&&open){$('attMsg').textContent='عندك حضور مفتوح مسجل بالفعل في نفس الفرع. سجل الانصراف الأول.';$('attMsg').className='status bad';$('attSubmit').disabled=false;$('attSubmit').textContent='تحديد موقعي وتسجيل الحركة';return}if(type==='انصراف'&&!open){$('attMsg').textContent='مفيش حضور مفتوح ليك في الفرع ده. لازم تسجل حضور الأول.';$('attMsg').className='status bad';$('attSubmit').disabled=false;$('attSubmit').textContent='تحديد موقعي وتسجيل الحركة';return}const record={name,role:$('attRole').value,branch:branch.name,area:branch.governorate||branch.city,type,time:new Date().toISOString(),lat:pos.lat,lng:pos.lng,accuracy:pos.accuracy,distance:check.distance,geofenceRadius:100,verified:true};a.unshift(record);write('attendance',a);logLocationAttempt({...record,coords:pos,accepted:true});$('attMsg').textContent=`تم تسجيل ${type} بنجاح. أنت على بُعد ${check.distance} متر من الفرع ودقة GPS ${pos.accuracy} متر.`;$('attMsg').className='status good';$('attSubmit').disabled=false;$('attSubmit').textContent='تحديد موقعي وتسجيل الحركة';refreshDashboard()},e=>{$('attMsg').textContent=e;$('attMsg').className='status bad';$('attSubmit').disabled=false;$('attSubmit').textContent='تحديد موقعي وتسجيل الحركة'})}
+const RETAIL_API_URL='https://script.google.com/macros/s/AKfycbyjUtaz-rZyCbi8qOrGKE9RM0hIusHFzNithkB1yFP43lJjxqPwaJ_lkDS1NBHNLZo1/exec';
+async function retailApi(action,payload={}){
+  const response=await fetch(RETAIL_API_URL,{
+    method:'POST',
+    headers:{'Content-Type':'text/plain;charset=utf-8'},
+    body:JSON.stringify({action,...payload}),
+    redirect:'follow'
+  });
+  if(!response.ok) throw new Error('تعذر الاتصال بقاعدة البيانات. كود الاستجابة: '+response.status);
+  const result=await response.json();
+  if(!result.success) throw new Error(result.message||'فشل تنفيذ العملية على قاعدة البيانات');
+  return result.data;
+}
+function employeePayload(name){return {employeeId:String(name||'').trim()};}
+function branchPayload(branch){return {branchId:String(branch?.name||'')};}
+function setAttendanceButtonBusy(busy,label){$('attSubmit').disabled=busy;$('attSubmit').textContent=label|| (busy?'جارٍ التسجيل...':'تحديد موقعي وتسجيل الحركة');}
+
+async function recordAttendance(){
+ const name=$('attName').value.trim(),idx=$('attBranch').value,type=$('attType').value,role=$('attRole').value;
+ if(!name){$('attMsg').textContent='اكتب اسم الموظف الأول';$('attMsg').className='status bad';return}
+ if(idx===''){$('attMsg').textContent='اختار الفرع الأول';$('attMsg').className='status bad';return}
+ const branch=DATA.branches[Number(idx)];setAttendanceButtonBusy(true,'جارٍ التحقق من الموقع...');
+ $('attMsg').textContent='جارٍ قراءة GPS والتحقق من نطاق الفرع...';$('attMsg').className='status';
+ gps(async pos=>{
+  const check=validateGeofence(pos,branch);
+  if(!check.ok){$('attMsg').textContent=check.message;$('attMsg').className='status bad';logLocationAttempt({name,role,branch:branch.name,type,coords:pos,accepted:false,reason:check.message});setAttendanceButtonBusy(false);return}
+  try{
+   const payload={...employeePayload(name),...branchPayload(branch),latitude:pos.lat,longitude:pos.lng,accuracy:pos.accuracy};
+   const result=await retailApi(type==='حضور'?'checkIn':'checkOut',payload);
+   const record={name,role,branch:branch.name,area:branch.governorate||branch.city,type,time:new Date().toISOString(),lat:pos.lat,lng:pos.lng,accuracy:pos.accuracy,distance:check.distance,geofenceRadius:100,verified:true,serverConfirmed:true};
+   let a=read('attendance');a.unshift(record);write('attendance',a);logLocationAttempt({...record,coords:pos,accepted:true});
+   $('attMsg').textContent=(result?.message||('تم تسجيل '+type+' بنجاح'))+` — ${check.distance} متر من الفرع، دقة GPS ${pos.accuracy} متر.`;$('attMsg').className='status good';refreshDashboard();
+  }catch(err){$('attMsg').textContent='لم يتم تسجيل الحركة: '+(err.message||err);$('attMsg').className='status bad';logLocationAttempt({name,role,branch:branch.name,type,coords:pos,accepted:false,reason:err.message||String(err)});}
+  finally{setAttendanceButtonBusy(false)}
+ },e=>{$('attMsg').textContent=e;$('attMsg').className='status bad';setAttendanceButtonBusy(false)})
+}
 function logLocationAttempt(item){const logs=read('location_attempts');logs.unshift({...item,attemptTime:new Date().toISOString()});write('location_attempts',logs.slice(0,500))}
 function captureVisitLocation(){const idx=$('branchSelect').value;if(idx===''){ $('visitLoc').textContent='اختار الفرع الأول';return}const branch=DATA.branches[Number(idx)];$('visitLoc').textContent='جارٍ تحديد الموقع والتحقق من نطاق 100 متر...';gps(p=>{const check=validateGeofence(p,branch);if(!check.ok){visitCoords=null;$('visitLoc').textContent=check.message;logLocationAttempt({name:$('visitor').value,branch:branch.name,type:'زيارة',coords:p,accepted:false,reason:check.message});return}visitCoords={...p,distance:check.distance,verified:true,branch:branch.name};$('visitLoc').textContent=`تم التحقق: أنت على بُعد ${check.distance} متر من الفرع (دقة GPS ${p.accuracy} متر)`},e=>{$('visitLoc').textContent=e;visitCoords=null})}
-function saveVisit(){let idx=$('branchSelect').value;if(!visitCoords?.verified||visitCoords.branch!==DATA.branches[Number(idx)]?.name){$('visitMsg').textContent='لازم تحدد موقعك وتتأكد إنك داخل نطاق 100 متر من الفرع قبل حفظ الزيارة.';$('visitMsg').className='status bad';return}if(idx===''){ $('visitMsg').textContent='اختار الفرع الأول';$('visitMsg').className='status bad';return}let ratings=getRatings(),missing=ratings.filter(x=>!x.rating),badNoNote=ratings.filter(x=>x.rating==='سيئة'&&!x.note);if(missing.length){$('visitMsg').textContent=`قيّم كل البنود قبل الحفظ. باقي ${missing.length} بند.`;$('visitMsg').className='status bad';let first=document.querySelector(`#checklist .checkitem[data-index="${missing[0].index}"]`);first?.scrollIntoView({behavior:'smooth',block:'center'});return}if(badNoNote.length){$('visitMsg').textContent=`اكتب ملاحظة لكل بند تقييمه سيئ. عدد الملاحظات المطلوبة: ${badNoNote.length}`;$('visitMsg').className='status bad';let first=document.querySelector(`#checklist .checkitem[data-index="${badNoNote[0].index}"]`);first?.scrollIntoView({behavior:'smooth',block:'center'});first?.querySelector('textarea')?.focus();return}let good=ratings.filter(x=>x.rating==='جيدة').length,bad=ratings.filter(x=>x.rating==='سيئة').length,na=ratings.filter(x=>x.rating==='لا توجد').length,den=good+bad,pct=den?Math.round(good/den*100):0,b=DATA.branches[Number(idx)],v=read('visits');v.unshift({branch:b.name,city:b.city,governorate:b.governorate,visitor:$('visitor').value,shiftIn:$('shiftIn').value,note:$('visitNote').value,time:new Date().toISOString(),ratings,good,bad,na,total:ratings.length,percent:pct,coords:visitCoords,distance:visitCoords.distance,verified:true,geofenceRadius:100});write('visits',v);$('visitMsg').textContent=`تم حفظ الزيارة. التقييم: ${pct}% — جيدة ${good} / سيئة ${bad} / لا توجد ${na}`;$('visitMsg').className='status good';refreshDashboard()}
+async function saveVisit(){
+ let idx=$('branchSelect').value;
+ if(idx===''){$('visitMsg').textContent='اختار الفرع الأول';$('visitMsg').className='status bad';return}
+ const b=DATA.branches[Number(idx)];
+ if(!visitCoords?.verified||visitCoords.branch!==b?.name){$('visitMsg').textContent='لازم تحدد موقعك وتتأكد إنك داخل نطاق 100 متر من الفرع قبل حفظ الزيارة.';$('visitMsg').className='status bad';return}
+ const visitor=$('visitor').value.trim();if(!visitor){$('visitMsg').textContent='اكتب اسم مدير المنطقة';$('visitMsg').className='status bad';return}
+ let ratings=getRatings(),missing=ratings.filter(x=>!x.rating),badNoNote=ratings.filter(x=>x.rating==='سيئة'&&!x.note);
+ if(missing.length){$('visitMsg').textContent=`قيّم كل البنود قبل الحفظ. باقي ${missing.length} بند.`;$('visitMsg').className='status bad';document.querySelector(`#checklist .checkitem[data-index="${missing[0].index}"]`)?.scrollIntoView({behavior:'smooth',block:'center'});return}
+ if(badNoNote.length){$('visitMsg').textContent=`اكتب ملاحظة لكل بند تقييمه سيئ. عدد الملاحظات المطلوبة: ${badNoNote.length}`;$('visitMsg').className='status bad';const first=document.querySelector(`#checklist .checkitem[data-index="${badNoNote[0].index}"]`);first?.scrollIntoView({behavior:'smooth',block:'center'});first?.querySelector('textarea')?.focus();return}
+ const good=ratings.filter(x=>x.rating==='جيدة').length,bad=ratings.filter(x=>x.rating==='سيئة').length,na=ratings.filter(x=>x.rating==='لا توجد').length,den=good+bad,pct=den?Math.round(good/den*100):0;
+ const btn=document.querySelector('#visit button.primary[onclick="saveVisit()"]');if(btn){btn.disabled=true;btn.textContent='جارٍ حفظ الزيارة...'}
+ $('visitMsg').textContent='جارٍ إرسال الزيارة والتقييمات إلى قاعدة البيانات...';$('visitMsg').className='status';
+ let visitId=null;
+ try{
+  const base={...employeePayload(visitor),...branchPayload(b),latitude:visitCoords.lat,longitude:visitCoords.lng,accuracy:visitCoords.accuracy};
+  const started=await retailApi('startVisit',base);visitId=started.visitId;
+  for(const r of ratings){await retailApi('saveChecklist',{...employeePayload(visitor),visitId,section:(r.group||'')+' / '+(r.section||''),item:r.item,rating:r.rating,note:r.note||''});}
+  const finished=await retailApi('finishVisit',{...employeePayload(visitor),...branchPayload(b),visitId,latitude:visitCoords.lat,longitude:visitCoords.lng,accuracy:visitCoords.accuracy});
+  const v=read('visits');v.unshift({branch:b.name,city:b.city,governorate:b.governorate,visitor,shiftIn:$('shiftIn').value,note:$('visitNote').value,time:new Date().toISOString(),ratings,good,bad,na,total:ratings.length,percent:pct,coords:visitCoords,distance:visitCoords.distance,verified:true,geofenceRadius:100,serverConfirmed:true,visitId});write('visits',v);
+  $('visitMsg').textContent=`${finished?.message||'تم حفظ الزيارة'} — التقييم: ${pct}% — جيدة ${good} / سيئة ${bad} / لا توجد ${na}`;$('visitMsg').className='status good';refreshDashboard();
+ }catch(err){$('visitMsg').textContent='تعذر إكمال حفظ الزيارة على قاعدة البيانات: '+(err.message||err)+(visitId?' (تم إنشاء الزيارة وقد تكون بعض التقييمات حُفظت؛ راجع سجل الزيارات قبل إعادة المحاولة.)':'');$('visitMsg').className='status bad';}
+ finally{if(btn){btn.disabled=false;btn.textContent='حفظ الزيارة'}}
+}
 function fmt(t){return new Date(t).toLocaleString('ar-EG')}
 function monthKey(t){const d=new Date(t);return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')}
 function monthData(){return $('reportMonth').value||monthKey(new Date())}
